@@ -269,7 +269,7 @@ class Rtrt(object): #{
   #} // end of get_rtrt()
   
   
-  def json_write(self, *argv, **kargv): #{
+  def json_write(self, filename=None, *argv, **kargv): #{
     """
     Options:
       filename      : <JSON file's name>       (default: DEFAULT_JSON_FILENAME)
@@ -279,7 +279,7 @@ class Rtrt(object): #{
     """
     (logdebug, log, logerr) = (self.logdebug, self.log, self.logerr)
     
-    filename = kargv.get('filename', self.DEFAULT_JSON_FILENAME)
+    if not filename: filename = self.DEFAULT_JSON_FILENAME
     rtrt_info_list = kargv.get('rtrt_info_list', self.rtrt_info_list)
     ext = kargv.get('ext', self.DEFAULT_JSON_EXT)
     indent = kargv.get('indent', self.DEFAULT_JSON_INDENT)
