@@ -1,0 +1,26 @@
+# === Twitter認証情報
+CONSUMER_KEY: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+CONSUMER_SECRET: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ACCESS_TOKEN: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ACCESS_TOKEN_SECRET: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# ■認証情報の取得方法
+#
+# 1. https://apps.twitter.com/ にて、自分の Twitter アカウントで Sign in。
+#
+# 2. [Create New App] でアプリケーション作成。
+#   ※作成済みの場合には、当該アプリケーション名をクリック。
+#
+# 3. [API Keys] タブをクリック。
+#
+# 4. Your access token 欄に Access token 等が表示されていない場合は、
+#    Your access token > Token actions > [Create my access token] をクリック。
+#
+# 5. Refresh をクリックして、[API Keys] タブを再表示。
+#   ※Your access token 欄が更新されない場合は、何度か[Details]タブとの間を往復。
+#
+# 6. 設定を config.yaml に書き写す。
+#    Application settings > API key          => CONSUMER_KEY
+#    Application settings > API secret       => CONSUMER_SECRET
+#    Your access token > Access token        => ACCESS_TOKEN
+#    Your access token > Access token secret => ACCESS_TOKEN_SECRET
