@@ -263,7 +263,7 @@ class Rtrt(object): #{
           if 0 < limit_rtrt_count:
             max_id = since_id + limit_rtrt_count
           else:
-            for status in self.iter_search(query=query, limit=1):
+            for status in self._iter_search(query=query, limit=1):
               if since_id < status.id:
                 max_id = status.id
           
@@ -293,7 +293,7 @@ class Rtrt(object): #{
               if use_search_api:
                 tl_iter = tweepy.Cursor(api.search, q=query, count=self.MAX_STATUSES_PER_CALL_SEARCH).items(limit=limit_statuses)
               else:
-                tl_iter = self.iter_search(query=query, limit=limit_statuses)
+                tl_iter = self._iter_search(query=query, limit=limit_statuses)
               (tgt_status, status_list) = self._check_timeline(search_id, tl_iter, limit_statuses, include_rt)
             except Exception, s:
               logerr(traceback.format_exc())
@@ -393,7 +393,7 @@ class Rtrt(object): #{
   #} // end of _check_timeline()
   
   
-  def iter_search(self, query, limit=0): #{
+  def _iter_search(self, query, limit=0): #{
     (logdebug, log, logerr) = (self.logdebug, self.log, self.logerr)
     class Status(object):
       def __init__(self, *argv, **kargv):
@@ -459,7 +459,7 @@ class Rtrt(object): #{
       
       scroll_cursor = tmp_scroll_cursor
     
-  #} // end of iter_search()
+  #} // end of _iter_search()
   
   
   def _get_rtrt_status(self, status): #{
