@@ -27,6 +27,9 @@ import json
 import codecs
 import traceback
 import datetime
+import urllib
+import urllib2
+import lxml.html as lxml_html
 
 import yaml   # pip install PyYAML
 import tweepy # pip install tweepy
@@ -34,7 +37,7 @@ import AppAuthHandler # 別ファイル(AppAuthHandler.py)で提供
 
 
 __author__    = 'furyu (furyutei@gmail.com)'
-__version__   = '0.0.1'
+__version__   = '0.0.2'
 
 
 class Rtrt(object): #{
@@ -47,8 +50,11 @@ class Rtrt(object): #{
   DEFAULT_LIMIT_RTS_OF_ME = 5
   DEFAULT_LIMIT_RTERS = 5
   DEFAULT_LIMIT_STATUSES = 3200
+  DEFAULT_RTRT_WAIT = 5 # RTへの言及は5分以内に行われる場合がほとんど(@esujiさんの情報(経験則)より)
+  
   DEFAULT_USE_TIMELINE = True
-  DEFAULT_USE_SEARCH = True
+  DEFAULT_USE_SEARCH = False
+  DEFAULT_USE_SEARCH_API = False
   DEFAULT_INCLUDE_RT = False
   
   DEFAULT_JSON_FILENAME = 'rtrt'
@@ -61,6 +67,8 @@ class Rtrt(object): #{
   
   MAX_STATUSES_PER_CALL_TIMELINE = 200
   MAX_STATUSES_PER_CALL_SEARCH = 100
+  
+  RATE_STATUS_PER_SEC = 0x0FA000000 # 2010.11.4 22:00(UTC)頃にstatusのidが約30,000,000,000→約300,000,000,000,000になり、その後はほぼ一定速度で増加
   #} // end of static paratemters
   
   #{ //***** functions
@@ -96,22 +104,31 @@ class Rtrt(object): #{
     if not access_token_secret: access_token_secret = conf.get('ACCESS_TOKEN_SECRET')
     
     self.oapi = None
-    if access_token and access_token_secret:
-      try:
-        oauth = tweepy.OAuthHandler(consumer_key, consumer_secret)
-        oauth.set_access_token(access_token, access_token_secret)
-        self.oapi = tweepy.API(oauth)
-      except Exception, s:
-        logerr(traceback.format_exc())
-    
     self.aapi = None
-    if kargv.get('use_aauth', self.DEFAULT_USE_AAUTH):
-      try:
-        aauth = AppAuthHandler.AppAuthHandler(consumer_key, consumer_secret)
-        self.aapi = tweepy.API(aauth)
-      except Exception, s:
-        logerr(traceback.format_exc())
-    
+    if consumer_key and consumer_secret:
+      if access_token and access_token_secret:
+        try:
+          oauth = tweepy.OAuthHandler(consumer_key, consumer_secret)
+          oauth.set_access_token(access_token, access_token_secret)
+          self.oapi = tweepy.API(oauth)
+          self.oapi.rate_limit_status()
+        except Exception, s:
+          self.oapi = None
+          logerr(traceback.format_exc())
+          logerr('Error: failed to initialize OAuth API')
+      
+      self.aapi = None
+      if kargv.get('use_aauth', self.DEFAULT_USE_AAUTH):
+        try:
+          aauth = AppAuthHandler.AppAuthHandler(consumer_key, consumer_secret)
+          self.aapi = tweepy.API(aauth)
+          self.aapi.rate_limit_status()
+        except Exception, s:
+          self.aapi = None
+          logerr(traceback.format_exc())
+          logerr('Error: failed to initialize Application-only Auth API')
+    else:
+      logerr('Error: consumer key or secret not found')
     self.api = self.aapi if self.aapi else self.oapi
     self.rtrt_info_list = []
   #} // end of def __init__()
@@ -120,16 +137,21 @@ class Rtrt(object): #{
   def get_rtrt(self, *argv, **kargv): #{
     """
     Options:
-      retweeted_ids     : [id0,id1,...]        (default: [] => get retweeted statuses with 'statuses/retweets_of_me')
-      retweet_user_ids  : [id0,id1,...]        (default: [])
-      retweet_user_names: [name1,name2,...]    (default: [])
-      limit_rts_of_me   : 1~MAX_RTS_OF_ME      (default: DEFAULT_LIMIT_RTS_OF_ME)
-      limit_rters       : 1~MAX_RTERS          (default: DEFAULT_LIMIT_RTERS)
-      limit_statuses    : 1~MAX_STATUSES       (default: DEFAULT_LIMIT_STATUSES)
-      use_timeline      : True/False           (default: DEFAULT_USE_TIMELINE)
-      use_search        : True/False           (default: DEFAULT_USE_SEARCH)
-      include_rt        : True/False           (default: DEFAULT_INCLUDE_RT)
+      retweeted_ids     : [id0,id1,...]     (default: [] => get retweeted statuses with 'statuses/retweets_of_me')
+      retweet_user_ids  : [id0,id1,...]     (default: [])
+      retweet_user_names: [name1,name2,...] (default: [])
+      limit_rts_of_me   : 1~MAX_RTS_OF_ME   (default: DEFAULT_LIMIT_RTS_OF_ME)
+      limit_rters       : 1~MAX_RTERS       (default: DEFAULT_LIMIT_RTERS)
+      limit_statuses    : 1~MAX_STATUSES    (default: DEFAULT_LIMIT_STATUSES)
+      limit_rtrt_wait   : 0, or 1~          (default: DEFAULT_RTRT_WAIT(minutes), 0: ignore) 
+      use_timeline      : True/False        (default: DEFAULT_USE_TIMELINE)
+      use_search        : True/False        (default: DEFAULT_USE_SEARCH)
+      use_search_api    : True/False        (default: DEFAULT_USE_SEARCH_API)
+      include_rt        : True/False        (default: DEFAULT_INCLUDE_RT)
+      debug             : True/False        (default: DEFAULT_DEBUG)
     """
+    _debug = kargv.get('debug')
+    if _debug is not None: self.flg_debug = _debug
     (logdebug, log, logerr) = (self.logdebug, self.log, self.logerr)
     try:
       retweeted_id_list = [int(v) for v in kargv.get('retweeted_ids', [])]
@@ -161,21 +183,30 @@ class Rtrt(object): #{
       limit_rts_of_me = self.DEFAULT_LIMIT_RTS_OF_ME
     
     try:
-      limit_rters = kargv.get('limit_rters', self.DEFAULT_LIMIT_RTERS)
+      limit_rters = int(kargv.get('limit_rters', self.DEFAULT_LIMIT_RTERS))
       if limit_rters < 1 or self.MAX_RTERS < limit_rters: limit_rters = self.DEFAULT_LIMIT_RTERS
     except Exception, s:
       logerr(traceback.format_exc())
       limit_rters = self.DEFAULT_LIMIT_RTERS
     
     try:
-      limit_statuses = kargv.get('limit_statuses', self.DEFAULT_LIMIT_STATUSES)
+      limit_statuses = int(kargv.get('limit_statuses', self.DEFAULT_LIMIT_STATUSES))
       if limit_statuses < 1 or self.MAX_STATUSES < limit_statuses: limit_statuses = self.DEFAULT_LIMIT_STATUSES
     except Exception, s:
       logerr(traceback.format_exc())
       limit_statuses = self.DEFAULT_LIMIT_STATUSES
-      
+    
+    try:
+      limit_rtrt_wait = int(kargv.get('limit_rtrt_wait', self.DEFAULT_RTRT_WAIT))
+      if limit_rtrt_wait < 0: limit_rtrt_wait = self.DEFAULT_RTRT_WAIT
+    except Exception, s:
+      limit_rtrt_wait = self.DEFAULT_RTRT_WAIT
+    
+    limit_rtrt_count = self.RATE_STATUS_PER_SEC * limit_rtrt_wait * 60
+    
     use_timeline = kargv.get('use_timeline', self.DEFAULT_USE_TIMELINE)
     use_search = kargv.get('use_search', self.DEFAULT_USE_SEARCH)
+    use_search_api = kargv.get('use_search_api', self.DEFAULT_USE_SEARCH_API)
     include_rt = kargv.get('include_rt', self.DEFAULT_INCLUDE_RT)
     
     (oapi, aapi, api) = (self.oapi, self.aapi, self.api)
@@ -207,7 +238,7 @@ class Rtrt(object): #{
         try:
           #retweets = api.retweets(id=retweeted.id, count=limit_rters)
           retweets = api.retweets(id=retweeted.id, count=self.MAX_RTERS)
-        except Exception:
+        except Exception, s:
           logerr(traceback.format_exc())
           break
         
@@ -221,30 +252,55 @@ class Rtrt(object): #{
               logdebug('=> skipped')
               continue
           
-          (flg_found, status_list) = (False, [])
-          if use_timeline and not flg_found:
+          (tgt_status, status_list) = (None, [])
+          created_at = retweet.created_at
+          #since = (created_at-datetime.timedelta(hours=24*1)).strftime('%Y-%m-%d')
+          since = created_at.strftime('%Y-%m-%d')
+          until = (created_at+datetime.timedelta(hours=24*2)).strftime('%Y-%m-%d')
+          query = 'from:%s since:%s until:%s' % (rt_user_name, since, until)
+          
+          (since_id, max_id) = (search_id, None)
+          if 0 < limit_rtrt_count:
+            max_id = since_id + limit_rtrt_count
+          else:
+            for status in self._iter_search(query=query, limit=1):
+              if since_id < status.id:
+                max_id = status.id
+          
+          logdebug('initial max_id=%s' % (max_id))
+          if max_id:
+            query = 'from:%s since_id:%s max_id:%s' % (rt_user_name, since_id, max_id)
+          
+          if use_timeline and not tgt_status:
             try:
               logdebug('  retweet.user.id: %s' % (retweet.user.id))
-              tl_iter = tweepy.Cursor(api.user_timeline, id=retweet.user.id, count=self.MAX_STATUSES_PER_CALL_TIMELINE, include_rts=True).items(limit=limit_statuses)
-              (flg_found, status_list) = self._check_timeline(search_id, tl_iter, limit_statuses, include_rt)
-            except Exception:
+              cursor = tweepy.Cursor(api.user_timeline, id=retweet.user.id, count=self.MAX_STATUSES_PER_CALL_TIMELINE, include_rts=True)
+              """■メモ
+               - tweepy.Cursor() の引数として max_id を渡すとイテレート中に例外が発生(不具合？)
+               - cursor.iterator.max_id・cursor.iterator.since_id 共に自然数で初期化しておかないと正常動作しない。
+               - cursor.iterator.since_id に初期値を渡すと、最初のAPIコール時の max_id に cursor.iterator.since_id - 1 が渡される
+              """
+              cursor.iterator.max_id = max_id + 1 if max_id else None
+              cursor.iterator.since_id = max_id
+              tl_iter = cursor.items(limit=limit_statuses)
+              (tgt_status, status_list) = self._check_timeline(search_id, tl_iter, limit_statuses, include_rt)
+            except Exception, s:
               logerr(traceback.format_exc())
           
-          if use_search and not flg_found:
+          if use_search and not tgt_status:
             try:
-              created_at = retweet.created_at
-              since = (created_at-datetime.timedelta(hours=24*1)).strftime('%Y-%m-%d')
-              until = (created_at+datetime.timedelta(hours=24*2)).strftime('%Y-%m-%d')
-              query = 'from:%s since:%s until:%s' % (rt_user_name, since, until)
               logdebug('  query: %s' % (query))
-              tl_iter = tweepy.Cursor(api.search, q=query, count=self.MAX_STATUSES_PER_CALL_SEARCH).items(limit=limit_statuses)
-              (flg_found, status_list) = self._check_timeline(search_id, tl_iter, limit_statuses, include_rt)
-            except Exception:
+              if use_search_api:
+                tl_iter = tweepy.Cursor(api.search, q=query, count=self.MAX_STATUSES_PER_CALL_SEARCH).items(limit=limit_statuses)
+              else:
+                tl_iter = self._iter_search(query=query, limit=limit_statuses)
+              (tgt_status, status_list) = self._check_timeline(search_id, tl_iter, limit_statuses, include_rt)
+            except Exception, s:
               logerr(traceback.format_exc())
           
-          if flg_found:
-            rtrt_status = self._get_rtrt_status(status_list[-1])
-            logdebug('=> found')
+          if tgt_status:
+            rtrt_status = self._get_rtrt_status(tgt_status)
+            logdebug('=> found (%s)' % (tgt_status.id))
           else:
             rtrt_status = self._get_rtrt_status(retweet)
             rtrt_status.update(
@@ -303,6 +359,7 @@ class Rtrt(object): #{
     
     flg_break = False
     for status in tl_iter:
+      logdebug('%s: %s' % (status.id, str(status.created_at)))
       if status.id <= search_id:
         flg_break = True
         break
@@ -312,7 +369,7 @@ class Rtrt(object): #{
     
     target_list = status_list if include_rt else status_list_wo_rt
     
-    logdebug('  status: %d  (without rt: %d)' % (len(status_list), len(status_list_wo_rt)))
+    logdebug('  status count: %d  (without RT: %d)' % (len(status_list), len(status_list_wo_rt)))
     
     if flg_break:
       if 0 < len(target_list):
@@ -321,8 +378,88 @@ class Rtrt(object): #{
       if len(status_list) < limit_statuses and 0 < len(target_list):
         flg_found = True
     
-    return (flg_found, target_list)
+    tgt_status = None
+    if flg_found:
+      tgt_status = target_list[-1]
+      if tgt_status and not hasattr(tgt_status, 'text'):
+        try:
+          tgt_status = target_list[-1] = self.api.get_status(id=tgt_status.id)
+        except Exception, s:
+          tgt_status = None
+          flg_found = False
+          logerr(traceback.format_exc())
+    
+    return (tgt_status, target_list)
   #} // end of _check_timeline()
+  
+  
+  def _iter_search(self, query, limit=0): #{
+    (logdebug, log, logerr) = (self.logdebug, self.log, self.logerr)
+    class Status(object):
+      def __init__(self, *argv, **kargv):
+        for (key, val) in kargv.items():
+          setattr(self, key, val)
+    
+    url_ep = 'https://twitter.com/i/search/timeline'
+    if isinstance(query, unicode): query = query.encode('utf-8','ignore')
+    param_dict = dict(
+      q = query,
+      f='realtime',
+      include_available_features = 1,
+      include_entities = 1,
+      last_note_ts = 0,
+    )
+    
+    cnt_status = 0
+    scroll_cursor = None
+    while True:
+      if scroll_cursor: param_dict['scroll_cursor'] = scroll_cursor
+      url = '%s?%s' % (url_ep, urllib.urlencode(param_dict))
+      logdebug(url)
+      req = urllib2.Request(url, None, {'User-Agent':'Mozilla/5.0 (Windows NT 6.3; WOW64; Trident/7.0; Touch; rv:11.0) like Gecko'})
+      try:
+        rsp = urllib2.urlopen(url)
+      except URLError, s:
+        logerr(traceback.format_exc())
+        if hasattr(s, 'reason'):
+          logerr('URLError: reason="%s"' % (s.reason))
+        elif hasattr(s, 'code'):
+          logerr('URLError: code=%s' % (s.code))
+        break
+      
+      rsp_json = rsp.read()
+      rsp_dict = json.loads(rsp_json)
+      inner = rsp_dict.get('inner')
+      if inner: rsp_dict = inner
+      
+      html = re.sub('(?:\A\s+|\s+\z)', '', rsp_dict.get('items_html',''))
+      if html:
+        doc = lxml_html.fromstring(html, base_url='https://twitter.com/')
+        tweet_list = doc.xpath('.//li[@data-item-type="tweet"]/div[@data-tweet-id]')
+        for tweet in tweet_list:
+          id = int(tweet.attrib.get('data-tweet-id'))
+          timestamp = int(tweet.xpath('.//a[contains(concat(" ",@class," ")," tweet-timestamp ")]//*[@data-time][1]')[0].attrib.get('data-time'))
+          created_at = datetime.datetime.utcfromtimestamp(timestamp)
+          status = Status(
+            id = id,
+            created_at = created_at,
+          )
+          yield status
+          cnt_status += 1
+          if limit and limit <= cnt_status: break
+        
+        if limit and limit <= cnt_status:
+          logdebug('*** limit (count=%d) ***' % (cnt_status))
+          break
+      
+      tmp_scroll_cursor = rsp_dict.get('scroll_cursor')
+      if not html or not tmp_scroll_cursor or (tmp_scroll_cursor == scroll_cursor) or (scroll_cursor and not rsp_dict.get('has_more_items')):
+        logdebug('*** data end ***')
+        break
+      
+      scroll_cursor = tmp_scroll_cursor
+    
+  #} // end of _iter_search()
   
   
   def _get_rtrt_status(self, status): #{
